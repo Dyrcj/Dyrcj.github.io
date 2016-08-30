@@ -16,9 +16,6 @@
 title: 小动物保护协会
 email: 627339205@qq.com
 description: > # this means to ignore newlines until "baseurl:"
-        暂时先占个位置吧
-        我也不知道写啥
-        技术博客,就酱
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "https://smallanimalprotectionassociation.github.io/" # the base hostname & protocol for your site
 twitter_username: hehe_hahaday
