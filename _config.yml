@@ -16,40 +16,12 @@
 title: 小动物保护协会
 email: 627339205@qq.com
 description: > # this means to ignore newlines until "baseurl:"
-<<<<<<< HEAD
         简单的记录一些东西吧，
         我也不知道写什么描述
 baseurl: "" # the subpath of your site, e.g. /blog
 url: "https://smallanimalprotectionassociation.github.io" # the base hostname & protocol for your site
 twitter_username: hehe_hahaday
 github_username:  SmallAnimalProtectionAssociation
-=======
-<<<<<<< HEAD
-<<<<<<< HEAD
-        暂时先占个位置吧
-        我也不知道写啥
-        技术博客,就酱
-baseurl: "" # the subpath of your site, e.g. /blog
-url: "https://smallanimalprotectionassociation.github.io/" # the base hostname & protocol for your site
-twitter_username: hehe_hahaday
-github_username:  smallanimalprotectionassociation
-=======
-        简单的记录一些东西吧，
-        我也不知道写什么描述
-baseurl: "" # the subpath of your site, e.g. /blog
-url: "https://smallanimalprotectionassociation.github.io" # the base hostname & protocol for your site
-twitter_username: hehe_hahaday
-github_username:  SmallAnimalProtectionAssociation
->>>>>>> master
-=======
-        简单的记录一些东西吧，
-        我也不知道写什么描述
-baseurl: "" # the subpath of your site, e.g. /blog
-url: "https://smallanimalprotectionassociation.github.io" # the base hostname & protocol for your site
-twitter_username: hehe_hahaday
-github_username:  SmallAnimalProtectionAssociation
->>>>>>> master
->>>>>>> gh-pages
 
 # Build settings
 markdown: kramdown
