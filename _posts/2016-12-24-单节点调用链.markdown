@@ -1,9 +1,11 @@
 目前市面上比较有名的开源的跨进程的APM工具为pinpoint，它是韩国的一个团队完成的，使用的是ASM这个库。上节介绍的ByteBuddy在ASM的基础上封装出来了简单方便的接口，即使不了解JVM的类加载机制也可以完成javaagent。本文将介绍如何使用byte buddy将一个应用的方法的call tree打印出来。本文默认读者了解javaagent，如果不了解请自行Google。
+
 ## Instrumentation的其他用法
 虽然使用javaagent的方式也可以将目标代码修改，不过觉得那种在启动时配置jar包的方式运行起来比较麻烦。因此介绍一种在运行时修改目标代码的方法：Attach加Agentmain。Agentmain的用法与Premain相同，都是通过Instrumentation来修改目标类。接下来我将介绍如何使用Attach的方式采集目标Java程序的JVM信息。
-思路如下，拢共分两步：
+思路如下，拢共分两步:
 第一步：先写一个入口方法为Agentmain方法的程序。它可以采集JVM信息并打印出来。将他封印到Jar包里。
 第二步：将Attach API封装到一个线程里面，这个线程定时检查当前所有运行的虚拟机，如果有新运行的虚拟机自动将之前的Jar包注射进去。
+
 ### Agentmain程序
 为了简便我们使用Metrics来采集JVM信息，先将Metrics引到项目中：
 ``` java
