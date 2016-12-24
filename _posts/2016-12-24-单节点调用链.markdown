@@ -1,0 +1,227 @@
+目前市面上比较有名的开源的跨进程的APM工具为pinpoint，它是韩国的一个团队完成的，使用的是ASM这个库。上节介绍的ByteBuddy在ASM的基础上封装出来了简单方便的接口，即使不了解JVM的类加载机制也可以完成javaagent。本文将介绍如何使用byte buddy将一个应用的方法的call tree打印出来。本文默认读者了解javaagent，如果不了解请自行Google。
+## Instrumentation的其他用法
+虽然使用javaagent的方式也可以将目标代码修改，不过觉得那种在启动时配置jar包的方式运行起来比较麻烦。因此介绍一种在运行时修改目标代码的方法：Attach加Agentmain。Agentmain的用法与Premain相同，都是通过Instrumentation来修改目标类。接下来我将介绍如何使用Attach的方式采集目标Java程序的JVM信息。
+思路如下，拢共分两步：
+第一步：先写一个入口方法为Agentmain方法的程序。它可以采集JVM信息并打印出来。将他封印到Jar包里。
+第二步：将Attach API封装到一个线程里面，这个线程定时检查当前所有运行的虚拟机，如果有新运行的虚拟机自动将之前的Jar包注射进去。
+### Agentmain程序
+为了简便我们使用Metrics来采集JVM信息，先将Metrics引到项目中：
+``` java
+<dependency>
+    <groupId>io.dropwizard.metrics</groupId>
+    <artifactId>metrics-core</artifactId>
+    <version>3.1.0</version>
+</dependency>
+<dependency>
+    <groupId>io.dropwizard.metrics</groupId>
+    <artifactId>metrics-jvm</artifactId>
+    <version>3.1.0</version>
+</dependency>
+```
+JVM信息采集器的代码如下，注释讲的很清楚，就不具体介绍了：
+``` java
+public class JvmMonitor {
+    private static final MetricRegistry metricRegistry = new MetricRegistry();
+    //将几个采集器注册
+    public static void init() {
+        //负责采集GC信息
+        metricRegistry.register("jvm.gc", new GarbageCollectorMetricSet());
+        //内存
+        metricRegistry.register("jvm.memory", new MemoryUsageGaugeSet());
+        //线程
+        metricRegistry.register("jvm.thread-states", new ThreadStatesGaugeSet());
+        //文件描述符
+        metricRegistry.register("jvm.file-descriptor", new FileDescriptorRatioGauge());
+    }
+    //接下来就打印了
+    private static void report() {
+        ConsoleReporter consoleReporter = ConsoleReporter.forRegistry(metricRegistry).build();
+        //每隔5秒打印一次
+        consoleReporter.start(5, TimeUnit.SECONDS);
+    }
+}
+```
+然后就是带有我们的入口函数Agentmain的类了，也就是将main函数换成Agentmain：
+``` java
+public class Entrance {
+    public static void Agentmain(String[] args) {
+        JvmMonitor.init();
+    }
+}
+```
+接下来是pom文件编译时的配置项，因为JVM默认是不允许Retransform的，所以要把以下这两项打开：
+``` java
+<manifestEntries>
+    <Agent-Class>com.yeepay.monitor.agent.Entrance</Agent-Class>
+    <Can-Redefine-Classes>true</Can-Redefine-Classes>
+    <Can-Retransform-Classes>true</Can-Retransform-Classes>
+</manifestEntries>
+```
+以上就是我们的Agent程序，非常简单。
+### 守护程序
+
+守护程序在启动的时候获取一个当前运行的虚拟机列表，如果有新鲜的虚拟机，就将之前打好的jar包注射进去，代码如下：
+``` java
+public static void main(String[] args) throws Throwable {
+        //获取之前的虚拟机信息
+        final List vmBefore = VirtualMachine.list();
+        String jarPath = "";
+        new Thread(() -> {
+            try {
+                VirtualMachine vm = null;
+                while (true) {
+                    //与之后的进行对比
+                    for (VirtualMachineDescriptor vmd : VirtualMachine.list()) {
+                        if (!vmBefore.contains(vmd)) {
+                            vm = VirtualMachine.attach(vmd);
+                            break;
+                        }
+                    }
+                    if (vm != null) {
+                        vm.loadAgent(jarPath);
+                        vm.detach();
+                        break;
+                    }
+                    Thread.currentThread().join(500);
+                }
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        }).start();
+        Thread.currentThread().join();
+    }
+```
+## Call Tree
+介绍完了Attach API之后本文的主角Call Tree就登场了。因为每进入到一个方法中，JVM都会讲这个方法压入方法栈中，所以对于每个线程来说，每个方法都会遵循严格的先进后出，因此我们只需在每个方法的入口将这个方法入栈，在方法的出口将这个方法出栈就可以打印出程序中每个方法的父子关系以及耗时甚至其他我们想获得的东西。例如，有如下方法：
+``` java
+public void grandfather() {
+     father();
+ }
+
+ private void father() {
+     me();
+     brother();
+ }
+
+ private void me() {
+     child();
+ }
+
+ private void brother() {
+     nephew();
+ }
+
+ private void child() {
+    System.out.println("I am child");
+ }
+
+ private void nephew() {
+    System.out.println("I am nephew");
+ }
+```
+方法的调用树如下图所示，红色箭头表示入栈，灰色箭头表示出栈。
+在每个方法的入栈时，记录一下当前方法的开始时间存储到栈帧中，在出栈时记录方法的结束时间就可以计算出在这个方法中的耗时。
+
+既然每个线程的方法调用关系都可以保存在栈里面，我们根据线程名为每个线程创建一个栈就可以了。代码如下：
+``` java
+public class ThreadMethodStack {
+    private static final ConcurrentHashMap<String, MethodContextStack> threads = new ConcurrentHashMap<>();
+
+    public static void push(MethodContext methodContext) {
+        MethodContextStack methodContextStack = getMethodContextStack();
+        if(methodContextStack == null) {
+            methodContextStack = new MethodContextStack(threadName);
+            threads.put(threadName, methodContextStack);
+        }
+        methodContextStack.push(methodContext);
+    }
+
+    public static MethodContext pop() {
+        MethodContextStack methodContextStack = getMethodContextStack();
+        if(methodContextStack == null) {
+            return null;
+        }
+        return methodContextStack.pop();
+    }
+
+    public static MethodContext peek() {
+        MethodContextStack methodContextStack = getMethodContextStack();
+        if(methodContextStack == null) {
+            return null;
+        }
+        return methodContextStack.peek();
+    }
+
+    private static MethodContextStack getMethodContextStack() {
+          return threads.get(Thread.currentThread().getName());
+    }
+
+}
+```
+因为`HashMap`在多线程情况下会出现的死锁问题。为了保证线程安全，我们将线程存储到`ConcurrentHashMap`中，他是可以在保证一定性能的情况下实现线程安全。与使用`Collection`的`synchronizedMap`方法将`HashMap`变为线程安全的相比，`ConcurrentHashMap`在内部将`HashMap`分割为多个子集，当key 哈希到不同的子集时不会被锁。
+`MethodContextStack`则是实现了方法栈的类，它的每个栈帧`MethodContext`，都存储了我们关心的方法的上下文信息（类名，方法名，参数，开始结束时间，注入代码对整个方法的影响时间等）。
+
+接下来就是重头戏使用Byte Buddy进行代码注入了，首先通过`AgentBuilder`来生成Agent。Byte Buddy的好处就是可以通过`Junction`方法提供的与、或、非将需要的不需要的类过滤出去。首先我们过滤掉几个注入代码会出现问题的类还有我们自己本身，还要设置`RETRANSFORMATION`这个条件，再实现`ErrorListener`类将注入代码的类监控出来，代码如下：
+``` java
+private static AgentBuilder createAgentBuilder() {
+   return new AgentBuilder.Default()
+   .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
+   .with(new ErrorListener())
+   .ignore(any(), ElementMatchers.isBootstrapClassLoader())
+   .or(any(), ClassLoaderNameMatcher.isReflectionClassLoader())
+   .or(ElementMatchers.nameStartsWith("java.") .or(ElementMatchers.nameStartsWith("com.sun."))
+   .or(ElementMatchers.nameStartsWith("sun."))
+   .or(ElementMatchers.nameStartsWith("net.bytebuddy"))
+   .or(ElementMatchers.nameStartsWith("com.yeepay.monitor")
+   )
+   .or(ElementMatchers.nameContains(".asm."))
+   .disableClassFormatChanges();
+    }
+```
+接下来就是将我们自己的匹配器设置到AgentBuilder里，在这里面设置为`any()`就可以了：
+``` java
+    // CustomTransformer.getMatcher()为any()
+    agentBuilder.type(CustomTransformer.getMatcher())
+```
+最后是在AgentBuilder里面设置transformer，设置为我们期望的方法拦截器：
+```
+agentBuilder.transform(CustomTransformer.getTransformer())
+```
+以下是`getTransformer`的具体实现：
+``` java
+public final AgentBuilder.Transformer getTransformer() {
+// getMethodElementMatcher()为any()
+    return ((builder, typeDescription, classLoader) 
+        -> builder.visit(Advice.to(getClass())
+        .on(getMethodElementMatcher())));
+}
+```
+在以上代码中`Adivce.to()`方法的参数就是拦截器了，而`.on`方法是过滤的条件，在这里因为比较简单我们设置为`any()`就可以了。
+
+最后是我们拦截器的核心代码：
+``` java
+@Advice.OnMethodEnter(inline = false)
+public static void monitorStart(
+     @Advice.AllArguments Object[] args, //表示方法参数值
+     @Advice.Origin("#t") String className,//方法所在类
+     @Advice.Origin("#m") String methodName, //方法名
+     @Advice.This(optional = true) Object thiz//实例本体
+     ) {
+    //TODO:在这里将方法启动时间等等信息入栈
+}
+```
+``` java
+@Advice.OnMethodExit(onThrowable = Throwable.class, 
+                    inline = false)
+public static void monitorStop(
+        @Advice.Thrown Throwable exception//方法抛出的异常
+        ) {
+    //TODO:在这里将方法弹栈，并记录异常与结束时间，以便算出耗时
+}
+```
+将之前提到的Attach与Byte Buddy实现的call tree结合起来就完成了一个单节点调用栈的监控。
+## 下节预告
+下节会解析一下pinpoint的源码。看看它的跨进程调用是如何实现的。
+
+
+
